@@ -17,6 +17,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/firefart/zwiebelproxy/antikorpsLogger"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
@@ -29,6 +31,9 @@ type application struct {
 	timeout   time.Duration
 	logger    Logger
 	templates *template.Template
+
+	JsonLogger        antikorpsLogger.MyJsonLogger
+	JsonLoggerEnabled bool
 }
 
 var (
@@ -52,15 +57,30 @@ func main() {
 	tor := flag.String("tor", lookupEnvOrString(log, "ZWIEBEL_TOR", "socks5://127.0.0.1:9050"), "TOR Proxy server. You can also use the ZWIEBEL_TOR environment variable or an entry in the .env file to set this parameter.")
 	wait := flag.Duration("graceful-timeout", lookupEnvOrDuration(log, "ZWIEBEL_GRACEFUL_TIMEOUT", 5*time.Second), "the duration for which the server gracefully wait for existing connections to finish - e.g. 15s or 1m. You can also use the ZWIEBEL_GRACEFUL_TIMEOUT environment variable or an entry in the .env file to set this parameter.")
 	timeout := flag.Duration("timeout", lookupEnvOrDuration(log, "ZWIEBEL_TIMEOUT", 5*time.Minute), "http timeout. You can also use the ZWIEBEL_TIMEOUT environment variable or an entry in the .env file to set this parameter.")
+	jsonPath := flag.String("jsonpath", "", "absolute path for the json log file")
+	var jsonLoggerEnabled bool
+	var jsonLogger antikorpsLogger.MyJsonLogger
+
 	flag.Parse()
+
+	if *jsonPath != "" {
+		jsonLoggerEnabled = true
+		jsonLogger = antikorpsLogger.NewJsonLogger(*jsonPath)
+	}
 
 	if *debug {
 		log.SetLevel(logrus.DebugLevel)
 		log.Debug("DEBUG mode enabled")
+		if jsonLoggerEnabled {
+			jsonLogger.DebugLevel("DEBUG mode enabled")
+		}
 	}
 
 	if len(*domain) == 0 {
 		log.Errorf("please provide a domain")
+		if jsonLoggerEnabled {
+			jsonLogger.ErrorLevel("please provide a domain")
+		}
 		os.Exit(1)
 	}
 
@@ -72,6 +92,10 @@ func main() {
 	torProxyURL, err := url.Parse(*tor)
 	if err != nil {
 		log.Errorf("invalid proxy url %s: %v", *tor, err)
+		if jsonLoggerEnabled {
+			message := fmt.Sprintf("invalid proxy url %s: %v", *tor, err)
+			jsonLogger.ErrorLevel(message)
+		}
 		os.Exit(1)
 	}
 
@@ -89,11 +113,13 @@ func main() {
 	}).DialContext
 
 	app := &application{
-		transport: tr,
-		domain:    *domain,
-		timeout:   *timeout,
-		logger:    log,
-		templates: template.Must(template.ParseFS(templateFS, "templates/*.tmpl")),
+		transport:         tr,
+		domain:            *domain,
+		timeout:           *timeout,
+		logger:            log,
+		templates:         template.Must(template.ParseFS(templateFS, "templates/*.tmpl")),
+		JsonLogger:        jsonLogger,
+		JsonLoggerEnabled: jsonLoggerEnabled,
 	}
 
 	srv := &http.Server{
@@ -101,10 +127,17 @@ func main() {
 		Handler: app.routes(),
 	}
 	log.Infof("Starting server on %s", *host)
+	if jsonLoggerEnabled {
+		message := fmt.Sprintf("Starting server on %s", *host)
+		jsonLogger.DebugLevel(message)
+	}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			log.Error(err)
+			if jsonLoggerEnabled {
+				jsonLogger.ErrorLevel(err.Error())
+			}
 		}
 	}()
 
@@ -115,8 +148,14 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error(err)
+		if jsonLoggerEnabled {
+			jsonLogger.ErrorLevel(err.Error())
+		}
 	}
 	log.Info("shutting down")
+	if jsonLoggerEnabled {
+		jsonLogger.DebugLevel("shutting down")
+	}
 	os.Exit(0)
 }
 
@@ -139,6 +178,9 @@ func (app *application) logError(w http.ResponseWriter, err error, statusCode in
 	w.Header().Set("Connection", "close")
 	errorText := fmt.Sprintf("%v", err)
 	app.logger.Error(errorText)
+	if app.JsonLoggerEnabled {
+		app.JsonLogger.DebugLevel(err.Error())
+	}
 
 	data := struct {
 		Error string
@@ -147,7 +189,14 @@ func (app *application) logError(w http.ResponseWriter, err error, statusCode in
 	}
 	if err2 := app.templates.ExecuteTemplate(w, "default.tmpl", data); err2 != nil {
 		app.logger.Error(err2)
+		if app.JsonLoggerEnabled {
+			app.JsonLogger.ErrorLevel(err2.Error())
+		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		if app.JsonLoggerEnabled {
+			message := fmt.Sprintf("Internal Server Error %d", http.StatusInternalServerError)
+			app.JsonLogger.ErrorLevel(message)
+		}
 	}
 }
 
@@ -160,12 +209,20 @@ func (app *application) proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	if host == strings.TrimLeft(app.domain, ".") {
 		if err := app.templates.ExecuteTemplate(w, "default.tmpl", nil); err != nil {
+			if app.JsonLoggerEnabled {
+				message := "error on executing template:" + err.Error()
+				app.JsonLogger.ErrorLevel(message)
+			}
 			panic(fmt.Sprintf("error on executing template: %v", err))
 		}
 		return
 	}
 
 	if !strings.HasSuffix(host, app.domain) {
+		if app.JsonLoggerEnabled {
+			message := fmt.Sprintf("invalid domain %s called. The domain needs to end in %s %d", host, app.domain, http.StatusBadRequest)
+			app.JsonLogger.ErrorLevel(message)
+		}
 		app.logError(w, fmt.Errorf("invalid domain %s called. The domain needs to end in %s", host, app.domain), http.StatusBadRequest)
 		return
 	}
@@ -180,6 +237,10 @@ func (app *application) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	proxy.ErrorHandler = app.proxyErrorHandler
 
 	app.logger.Debugf("sending request %+v", r)
+	if app.JsonLoggerEnabled {
+		message := app.JsonLogger.LogRequestJson(r, "DEBUG", "sending request")
+		app.JsonLogger.WriteToFile(message)
+	}
 
 	// set a custom timeout
 	ctx, cancel := context.WithTimeout(r.Context(), app.timeout)
