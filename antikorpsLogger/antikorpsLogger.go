@@ -198,7 +198,7 @@ func NewJsonLogger(path string) MyJsonLogger {
 }
 
 func (m *MyJsonLogger) WriteToFile(content string) {
-	_, e := io.WriteString(m.FileToWrite, content+"\n")
+	_, e := io.WriteString(m.FileToWrite, content+"\r\n")
 	if e != nil {
 		log.Println("antikorps error logging to json" + e.Error())
 		return
