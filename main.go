@@ -57,7 +57,7 @@ func main() {
 	tor := flag.String("tor", lookupEnvOrString(log, "ZWIEBEL_TOR", "socks5://127.0.0.1:9050"), "TOR Proxy server. You can also use the ZWIEBEL_TOR environment variable or an entry in the .env file to set this parameter.")
 	wait := flag.Duration("graceful-timeout", lookupEnvOrDuration(log, "ZWIEBEL_GRACEFUL_TIMEOUT", 5*time.Second), "the duration for which the server gracefully wait for existing connections to finish - e.g. 15s or 1m. You can also use the ZWIEBEL_GRACEFUL_TIMEOUT environment variable or an entry in the .env file to set this parameter.")
 	timeout := flag.Duration("timeout", lookupEnvOrDuration(log, "ZWIEBEL_TIMEOUT", 5*time.Minute), "http timeout. You can also use the ZWIEBEL_TIMEOUT environment variable or an entry in the .env file to set this parameter.")
-	jsonPath := flag.String("jsonpath", "", "absolute path for the json log file")
+	jsonPath := flag.String("jsonpath", "", "absolute path folder for the json log files")
 	var jsonLoggerEnabled bool
 	var jsonLogger antikorpsLogger.MyJsonLogger
 
@@ -66,6 +66,11 @@ func main() {
 	if *jsonPath != "" {
 		jsonLoggerEnabled = true
 		jsonLogger = antikorpsLogger.NewJsonLogger(*jsonPath)
+	}
+	jsonPathEnv := os.Getenv("jsonpath")
+	if !jsonLoggerEnabled && jsonPathEnv != "" {
+		jsonLoggerEnabled = true
+		jsonLogger = antikorpsLogger.NewJsonLogger(jsonPathEnv)
 	}
 
 	if *debug {

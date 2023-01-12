@@ -3,13 +3,18 @@ package antikorpsLogger
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 )
+
+var fileLock sync.Mutex
 
 type Header map[string][]string
 
@@ -174,7 +179,7 @@ func (m *MyJsonLogger) LogRequestJson(r *http.Request, level, message string) st
 }
 
 type MyJsonLogger struct {
-	FileToWrite   *os.File
+	JsonPath      string
 	CriticalError string
 }
 
@@ -185,24 +190,35 @@ type JsonBasicLogger struct {
 }
 
 func NewJsonLogger(path string) MyJsonLogger {
-	f, e := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
-	if e != nil {
-		return MyJsonLogger{
-			CriticalError: e.Error(),
-		}
-	}
-
 	return MyJsonLogger{
-		FileToWrite: f,
+		JsonPath: path,
 	}
 }
 
+func getFileNameByDay() string {
+	now := time.Now().Unix()
+	// año, mes, día: 20060102
+	unixTime := time.Unix(now, 0).Format("20060102")
+	filename := fmt.Sprintf("%v_log.jsonl", unixTime)
+	return filename
+}
+
 func (m *MyJsonLogger) WriteToFile(content string) {
-	_, e := io.WriteString(m.FileToWrite, content+"\r\n")
+	fileName := getFileNameByDay()
+	fileLock.Lock()
+	filePath := filepath.Join(m.JsonPath, fileName)
+	f, e := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
 	if e != nil {
-		log.Println("antikorps error logging to json" + e.Error())
+		log.Println("antikorps error opening jsonl file" + e.Error())
 		return
 	}
+	defer f.Close()
+	_, writeError := io.WriteString(f, content+"\r\n")
+	if writeError != nil {
+		log.Println("antikorps error logging to json" + writeError.Error())
+		return
+	}
+	fileLock.Unlock()
 }
 
 func (m *MyJsonLogger) BasicLogCompact(message, level string) string {
